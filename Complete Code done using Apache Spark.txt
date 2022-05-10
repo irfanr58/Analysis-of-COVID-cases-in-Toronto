@@ -1,0 +1,101 @@
+The complete code that was used - 
+
+
+hadoop fs -mkdir /BigData
+hadoop fs -copyFromLocal COVID19cases11.csv /BigData/.
+
+
+
+
+spark-shell --master yarn 
+
+
+import org.apache.spark.sql.functions._
+import org.apache.spark.ml.feature.{VectorAssembler}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.regression.{LinearRegression}
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{RegressionEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.types.{DoubleType}
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer}
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
+import org.apache.spark.ml.evaluation.{MulticlassClassificationEvaluator}
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.sql.types.{IntegerType, DoubleType}
+
+
+
+val covidresults = spark.read
+ .format("csv")
+ .option("header", "true")
+ .load("hdfs://10.128.0.2:8020/BigData/COVID19cases11.csv")
+
+
+val firstsort = covidresults.select(col("_id"), col("Outcome"), col("Age Group"), col("EverHospitalizedBinary").cast(IntegerType),
+ col("EverinICUBinary").cast(IntegerType), col("Ever Intubated"))
+
+
+
+val secondsort = firstsort.select(col("_id"), col("Age Group"), col("Outcome"), col("EverHospitalizedBinary").cast(IntegerType),
+ col("EverinICUBinary").cast(IntegerType), col("Ever Intubated")). filter(col("Outcome") !== "ACTIVE")
+
+
+
+val Array(trainingData, testData) = secondsort.randomSplit(Array(0.8, 0.2), 800)
+
+val indexer0 = new StringIndexer()
+  .setInputCol("Outcome")
+  .setOutputCol("Outcome_indexed")
+
+
+val assembler = new VectorAssembler()
+ .setInputCols(Array("EverHospitalizedBinary", "EverinICUBinary"))
+ .setOutputCol("assembled-features")
+
+
+val rf = new RandomForestClassifier()
+ .setFeaturesCol("assembled-features")
+ .setLabelCol("Outcome_indexed")
+ .setSeed(1234)
+
+
+
+val pipeline = new Pipeline()
+  .setStages(Array(indexer0, assembler, rf))
+
+
+
+val evaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("Outcome_indexed")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+
+
+
+val paramGrid = new ParamGridBuilder()  
+  .addGrid(rf.maxDepth, Array(3, 5))
+  .addGrid(rf.impurity, Array("entropy","gini")).build()
+
+
+
+val cross_validator = new CrossValidator()
+  .setEstimator(pipeline)
+  .setEvaluator(evaluator)
+  .setEstimatorParamMaps(paramGrid)
+  .setNumFolds(3)
+
+val cvModel = cross_validator.fit(trainingData)
+
+
+val predictions = cvModel.transform(testData)
+
+
+
+val accuracy = evaluator.evaluate(predictions)
+
+println("accuracy on test data = " + accuracy)
